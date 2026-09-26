@@ -1,0 +1,1 @@
+These XML records are **synthetic**, sanitized test fixtures. They exercise the parser contract but are not captures from a Veeam Agent host. Replace or supplement them with sanitized real 110, 190, and 191 event XML before claiming production validation.

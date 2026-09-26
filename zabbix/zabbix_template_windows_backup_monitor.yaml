@@ -1,0 +1,508 @@
+zabbix_export:
+  version: "7.0"
+  template_groups:
+    -
+      uuid: "a571c0d144b14fd4a87a9d9b2aa9fcd6"
+      name: "Templates/Applications"
+  templates:
+    -
+      uuid: "8f3c4a3b8c4350838ed5ee05be4bd649"
+      template: "Windows backup monitor by Zabbix agent 2"
+      name: "Windows backup monitor by Zabbix agent 2"
+      description: "Read-only local Veeam Agent and SQL Backup Master monitoring. Validate on real hosts before production use."
+      groups:
+        -
+          name: "Templates/Applications"
+      items:
+        -
+          uuid: "ea68d5bba6c657ffaebec772d77395d8"
+          name: "Backup: Collector JSON"
+          type: "ZABBIX_PASSIVE"
+          key: "windows.backup.monitor.get"
+          delay: "5m"
+          history: "1d"
+          trends: "0"
+          value_type: "TEXT"
+          preprocessing:
+            -
+              type: "JAVASCRIPT"
+              parameters:
+                - "var d=JSON.parse(value);if(d.schema_version!==1||!Array.isArray(d.providers)||!Array.isArray(d.jobs))throw 'Invalid backup monitor schema';return value;"
+          triggers:
+            -
+              uuid: "5c37c89278b95eecaf1ba9b68e02c2ac"
+              expression: "nodata(/Windows backup monitor by Zabbix agent 2/windows.backup.monitor.get,15m)=1"
+              name: "Backup: No valid collector data for 15 minutes"
+              priority: "WARNING"
+        -
+          uuid: "5845b8f73d485350a28e97e89a85c330"
+          name: "Backup: Total discovered jobs"
+          type: "DEPENDENT"
+          key: "windows.backup.jobs.total"
+          history: "30d"
+          trends: "0"
+          value_type: "UNSIGNED"
+          preprocessing:
+            -
+              type: "JAVASCRIPT"
+              parameters:
+                - "return JSON.parse(value).jobs.length;"
+          master_item:
+            key: "windows.backup.monitor.get"
+        -
+          uuid: "2dc0423640b85bb3b6d2bfe23b735059"
+          name: "Backup: Failed jobs"
+          type: "DEPENDENT"
+          key: "windows.backup.jobs.failed"
+          history: "30d"
+          trends: "0"
+          value_type: "UNSIGNED"
+          preprocessing:
+            -
+              type: "JAVASCRIPT"
+              parameters:
+                - "var j=JSON.parse(value).jobs,n=0;for(var i=0;i<j.length;i++)if(j[i].status_code===3)n++;return n;"
+          master_item:
+            key: "windows.backup.monitor.get"
+        -
+          uuid: "5c5540591c765a2e856cc9a93562fe92"
+          name: "Backup: Warning jobs"
+          type: "DEPENDENT"
+          key: "windows.backup.jobs.warning"
+          history: "30d"
+          trends: "0"
+          value_type: "UNSIGNED"
+          preprocessing:
+            -
+              type: "JAVASCRIPT"
+              parameters:
+                - "var j=JSON.parse(value).jobs,n=0;for(var i=0;i<j.length;i++)if(j[i].status_code===2)n++;return n;"
+          master_item:
+            key: "windows.backup.monitor.get"
+        -
+          uuid: "d6f1b5551a0f540e810b7b4033667e39"
+          name: "Backup: Running jobs"
+          type: "DEPENDENT"
+          key: "windows.backup.jobs.running"
+          history: "30d"
+          trends: "0"
+          value_type: "UNSIGNED"
+          preprocessing:
+            -
+              type: "JAVASCRIPT"
+              parameters:
+                - "var j=JSON.parse(value).jobs,n=0;for(var i=0;i<j.length;i++)if(j[i].running===true)n++;return n;"
+          master_item:
+            key: "windows.backup.monitor.get"
+        -
+          uuid: "883547822ed75ea6ade2753e770eb272"
+          name: "Backup: Provider errors"
+          type: "DEPENDENT"
+          key: "windows.backup.providers.errors"
+          history: "30d"
+          trends: "0"
+          value_type: "UNSIGNED"
+          preprocessing:
+            -
+              type: "JAVASCRIPT"
+              parameters:
+                - "var p=JSON.parse(value).providers,n=0;for(var i=0;i<p.length;i++)if(p[i].detected===true&&p[i].ok===false)n++;return n;"
+          master_item:
+            key: "windows.backup.monitor.get"
+          triggers:
+            -
+              uuid: "afd2df2f670c5bef9ce0b522713b60c5"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.providers.errors)>0"
+              name: "Backup: Provider query error"
+              priority: "WARNING"
+      discovery_rules:
+        -
+          uuid: "573ca425f5d45eefbabfb47d98aef7f0"
+          name: "Backup jobs discovery"
+          type: "DEPENDENT"
+          key: "windows.backup.jobs.discovery"
+          lifetime_type: "DELETE_AFTER"
+          lifetime: "7d"
+          enabled_lifetime_type: "DISABLE_IMMEDIATELY"
+          master_item:
+            key: "windows.backup.monitor.get"
+          preprocessing:
+            -
+              type: "JSONPATH"
+              parameters:
+                - "$.jobs"
+          lld_macro_paths:
+            -
+              lld_macro: "{#JOBUID}"
+              path: "$.job_uid"
+            -
+              lld_macro: "{#PROVIDER}"
+              path: "$.provider"
+            -
+              lld_macro: "{#JOB}"
+              path: "$.job"
+          item_prototypes:
+            -
+              uuid: "5a3d9c51d35e5e3e8ddaa329e27c628c"
+              name: "Backup [{#PROVIDER}] {#JOB}: Last status"
+              type: "DEPENDENT"
+              key: "windows.backup.job.status[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].status_code;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              valuemap:
+                name: "Windows backup job status"
+            -
+              uuid: "52753df6a74d5ccd924484dd42fc4fdb"
+              name: "Backup [{#PROVIDER}] {#JOB}: Running"
+              type: "DEPENDENT"
+              key: "windows.backup.job.running[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].running;if(v===null||typeof v==='undefined')return null;return v ? 1 : 0;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+            -
+              uuid: "93c24ce6cf6c5455ac3de89152f116df"
+              name: "Backup [{#PROVIDER}] {#JOB}: Enabled"
+              type: "DEPENDENT"
+              key: "windows.backup.job.enabled[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].enabled;if(v===null||typeof v==='undefined')return null;return v ? 1 : 0;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+            -
+              uuid: "6d92ff2247655341ba319c60a5eed9ed"
+              name: "Backup [{#PROVIDER}] {#JOB}: Last start"
+              type: "DEPENDENT"
+              key: "windows.backup.job.last_start[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].last_start_epoch;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              units: "unixtime"
+            -
+              uuid: "8fedc3c1bfb6527eb2055d34341885ca"
+              name: "Backup [{#PROVIDER}] {#JOB}: Last finish"
+              type: "DEPENDENT"
+              key: "windows.backup.job.last_finish[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].last_finish_epoch;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              units: "unixtime"
+            -
+              uuid: "8924ff0e31df5b4aa870e7844331c662"
+              name: "Backup [{#PROVIDER}] {#JOB}: Last successful backup"
+              type: "DEPENDENT"
+              key: "windows.backup.job.last_success[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].last_success_epoch;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              units: "unixtime"
+            -
+              uuid: "c52fb0f934a5511191c7ac1d4b0db0a6"
+              name: "Backup [{#PROVIDER}] {#JOB}: Last successful backup age"
+              type: "DEPENDENT"
+              key: "windows.backup.job.success_age[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].last_success_age_seconds;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              units: "s"
+            -
+              uuid: "529bbfd1410f52eb9ebb106fdf50dc7e"
+              name: "Backup [{#PROVIDER}] {#JOB}: Duration"
+              type: "DEPENDENT"
+              key: "windows.backup.job.duration[{#JOBUID}]"
+              history: "30d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].duration_seconds;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              units: "s"
+            -
+              uuid: "ef927192580551dc8f886b83a93b2324"
+              name: "Backup [{#PROVIDER}] {#JOB}: Next run"
+              type: "DEPENDENT"
+              key: "windows.backup.job.next_run[{#JOBUID}]"
+              history: "7d"
+              trends: "0"
+              value_type: "UNSIGNED"
+              preprocessing:
+                -
+                  type: "JAVASCRIPT"
+                  parameters:
+                    - "var d=JSON.parse(value);var uid='{#JOBUID}';for(var i=0;i<d.jobs.length;i++){if(d.jobs[i].job_uid===uid){var v=d.jobs[i].next_run_epoch;if(v===null||typeof v==='undefined')return null;return v;}}return null;"
+              master_item:
+                key: "windows.backup.monitor.get"
+              tags:
+                -
+                  tag: "Application"
+                  value: "Backup Monitoring"
+                -
+                  tag: "component"
+                  value: "backup-job"
+                -
+                  tag: "provider"
+                  value: "{#PROVIDER}"
+                -
+                  tag: "job"
+                  value: "{#JOB}"
+                -
+                  tag: "jobuid"
+                  value: "{#JOBUID}"
+              units: "unixtime"
+          trigger_prototypes:
+            -
+              uuid: "85767f63b90b5e8292705c688e3f8005"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.status[{#JOBUID}])=3"
+              name: "Backup [{#PROVIDER}] {#JOB}: Failed"
+              priority: "HIGH"
+            -
+              uuid: "2ebd043336a158bab4c48581030c1990"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.status[{#JOBUID}])=5"
+              name: "Backup [{#PROVIDER}] {#JOB}: Canceled"
+              priority: "WARNING"
+            -
+              uuid: "86291fba0be35c29adccb1edf1bb3c16"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.status[{#JOBUID}])=2"
+              name: "Backup [{#PROVIDER}] {#JOB}: Warning result"
+              priority: "WARNING"
+            -
+              uuid: "f7c24a2d9d845e3f9861a70cccd251ee"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.status[{#JOBUID}])=6"
+              name: "Backup [{#PROVIDER}] {#JOB}: Never run"
+              priority: "HIGH"
+            -
+              uuid: "743b8a044c235a619be6a55e37966d57"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.success_age[{#JOBUID}])>{$BACKUP.MAX.SUCCESS.AGE}"
+              name: "Backup [{#PROVIDER}] {#JOB}: No recent success"
+              priority: "HIGH"
+            -
+              uuid: "4ca1e6d0054551ba9c551ac400b8c7a1"
+              expression: "last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.status[{#JOBUID}])=4 and last(/Windows backup monitor by Zabbix agent 2/windows.backup.job.duration[{#JOBUID}])>{$BACKUP.MAX.RUN.TIME}"
+              name: "Backup [{#PROVIDER}] {#JOB}: Running too long"
+              priority: "WARNING"
+      tags:
+        -
+          tag: "class"
+          value: "backup"
+        -
+          tag: "target"
+          value: "windows"
+        -
+          tag: "component"
+          value: "backup-monitor"
+      macros:
+        -
+          macro: "{$BACKUP.MAX.SUCCESS.AGE}"
+          value: "26h"
+        -
+          macro: "{$BACKUP.MAX.RUN.TIME}"
+          value: "12h"
+      valuemaps:
+        -
+          uuid: "083699bcc3e05144afb9590fb37e6a00"
+          name: "Windows backup job status"
+          mappings:
+            -
+              value: "0"
+              newvalue: "Unknown"
+            -
+              value: "1"
+              newvalue: "Success"
+            -
+              value: "2"
+              newvalue: "Warning"
+            -
+              value: "3"
+              newvalue: "Failed"
+            -
+              value: "4"
+              newvalue: "Running"
+            -
+              value: "5"
+              newvalue: "Canceled"
+            -
+              value: "6"
+              newvalue: "Never run"
+            -
+              value: "7"
+              newvalue: "Disabled"

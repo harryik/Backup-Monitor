@@ -1,0 +1,62 @@
+name: Attach release assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  attach:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'src/windows-backup-monitor.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+      - name: Run Pester tests
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 3.4.0
+          $result = Invoke-Pester -Path '.\tests\windows-backup-monitor.Tests.ps1' -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+      - name: Validate Zabbix template YAML
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check PyYAML==6.0.2
+          $env:REQUIRE_YAML = '1'
+          python tests/test_template.py
+      - name: Build ZIP and SHA256SUMS
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python tools/package.py --version $env:RELEASE_TAG
+          $line = (Get-Content dist/SHA256SUMS.txt -Raw).Trim()
+          $parts = $line -split '  ', 2
+          $actual = (Get-FileHash (Join-Path dist $parts[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $parts[0]) { throw 'SHA256SUMS verification failed' }
+      - name: Upload to published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $existing = @(gh release view $env:RELEASE_TAG --json assets --jq '.assets[].name')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect release assets' }
+          foreach ($file in @(Get-ChildItem dist -File | Where-Object { $_.Extension -eq '.zip' -or $_.Name -eq 'SHA256SUMS.txt' })) {
+            if ($existing -notcontains $file.Name) {
+              gh release upload $env:RELEASE_TAG $file.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Failed to upload $($file.Name)" }
+            }
+          }

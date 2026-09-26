@@ -1,0 +1,55 @@
+name: Test and package
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'src/windows-backup-monitor.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+      - name: Run Pester tests
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 3.4.0
+          $result = Invoke-Pester -Path '.\tests\windows-backup-monitor.Tests.ps1' -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+      - name: Validate Zabbix template YAML
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check PyYAML==6.0.2
+          $env:REQUIRE_YAML = '1'
+          python tests/test_template.py
+      - name: Build release ZIP and SHA256SUMS
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v1-dev' }
+          python tools/package.py --version $version
+          $line = (Get-Content dist/SHA256SUMS.txt -Raw).Trim()
+          $parts = $line -split '  ', 2
+          $actual = (Get-FileHash (Join-Path dist $parts[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $parts[0]) { throw 'SHA256SUMS verification failed' }
+          Add-Content -Path $env:GITHUB_ENV -Value "PACKAGE_VERSION=$version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-backup-monitor-${{ env.PACKAGE_VERSION }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
