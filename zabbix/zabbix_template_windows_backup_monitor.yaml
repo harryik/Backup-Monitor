@@ -19,7 +19,7 @@ zabbix_export:
           name: "Backup: Collector JSON"
           type: "ZABBIX_PASSIVE"
           key: "windows.backup.monitor.get"
-          delay: "5m"
+          delay: "1h"
           history: "1d"
           trends: "0"
           value_type: "TEXT"
@@ -31,8 +31,8 @@ zabbix_export:
           triggers:
             -
               uuid: "5c37c89278b95eecaf1ba9b68e02c2ac"
-              expression: "nodata(/Windows backup monitor by Zabbix agent 2/windows.backup.monitor.get,15m)=1"
-              name: "Backup: No valid collector data for 15 minutes"
+              expression: "nodata(/Windows backup monitor by Zabbix agent 2/windows.backup.monitor.get,3h)=1"
+              name: "Backup: No valid collector data for 3 hours"
               priority: "WARNING"
         -
           uuid: "5845b8f73d485350a28e97e89a85c330"

@@ -2,7 +2,7 @@
 
 ## Veeam Agent
 
-The collector makes one bounded `Get-WinEvent` query of the local **Veeam Agent** log for IDs 110 (start), 190 (final result), and 191 (retry). The default window is 90 days. Event 191 does not count as a final success. A start newer than the latest final 190 is reported as running. Event 190 uses structured `EventData` status when available, otherwise the documented event severity: Information = Success, Warning = Warning, Error = Failed.
+The collector makes one bounded `Get-WinEvent` query of the local **Veeam Agent** log for IDs 110 (start), 190 (final result), and 191 (retry). The default window is 30 days. Event 191 does not count as a final success. A start newer than the latest final 190 is reported as running. Event 190 uses structured `EventData` status when available, otherwise the documented event severity: Information = Success, Warning = Warning, Error = Failed.
 
 The XML adapter accepts named `JobName`, `Job`, or `BackupJobName` fields. It provisionally accepts the first unnamed `EventData` field as the job name. If no structured job name is available, the provider reports a parse error; it never silently reports zero jobs. The included XML fixtures are synthetic and are **not** captured Veeam records. Confirm the field mapping and severity against sanitized real samples of success, warning, failure, retry, multiple jobs, and Unicode names. The collector does not parse localized rendered messages.
 

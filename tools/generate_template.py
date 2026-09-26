@@ -32,9 +32,9 @@ def item(name, key, script, history="30d"):
     }
 
 
-def trigger(name, expression, priority):
+def trigger(name, expression, priority, identity=None):
     return {
-        "uuid": uid("trigger:" + name),
+        "uuid": uid("trigger:" + (identity or name)),
         "expression": expression,
         "name": name,
         "priority": priority,
@@ -101,16 +101,17 @@ def main():
         "name": "Backup: Collector JSON",
         "type": "ZABBIX_PASSIVE",
         "key": MASTER,
-        "delay": "5m",
+        "delay": "1h",
         "history": "1d",
         "trends": "0",
         "value_type": "TEXT",
         "preprocessing": [step(validate)],
         "triggers": [
             trigger(
-                "Backup: No valid collector data for 15 minutes",
-                f"nodata(/{TEMPLATE}/{MASTER},15m)=1",
+                "Backup: No valid collector data for 3 hours",
+                f"nodata(/{TEMPLATE}/{MASTER},3h)=1",
                 "WARNING",
+                identity="Backup: No valid collector data for 15 minutes",
             )
         ],
     }

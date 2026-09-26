@@ -20,10 +20,10 @@ The configured command uses `powershell.exe -NoLogo -NoProfile -NonInteractive -
 ```powershell
 powershell.exe -NoLogo -NoProfile -NonInteractive -File .\src\windows-backup-monitor.ps1
 powershell.exe -NoLogo -NoProfile -NonInteractive -File .\src\windows-backup-monitor.ps1 -Provider SqlBackupMaster
-powershell.exe -NoLogo -NoProfile -NonInteractive -File .\src\windows-backup-monitor.ps1 -VeeamLookbackDays 90
+powershell.exe -NoLogo -NoProfile -NonInteractive -File .\src\windows-backup-monitor.ps1 -VeeamLookbackDays 30
 ```
 
-The default `Auto` mode queries both providers. A selected provider mode includes only that provider in the JSON. Exit code `0` means a valid JSON document was written, including when a provider has `ok=false`; collector-level failures use codes `2`, `3`, and `4`.
+The default `Auto` mode queries both providers. Veeam Event Log lookback defaults to 30 days, and the Zabbix master item runs once an hour. A selected provider mode includes only that provider in the JSON. Exit code `0` means a valid JSON document was written, including when a provider has `ok=false`; collector-level failures use codes `2`, `3`, and `4`.
 
 Example (timestamps and UID are illustrative):
 

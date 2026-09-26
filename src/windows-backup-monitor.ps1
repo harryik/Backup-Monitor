@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Auto', 'VeeamAgent', 'SqlBackupMaster')][string]$Provider = 'Auto',
-    [ValidateRange(1, 3650)][int]$VeeamLookbackDays = 90
+    [ValidateRange(1, 3650)][int]$VeeamLookbackDays = 30
 )
 
 Set-StrictMode -Version 2.0
@@ -278,7 +278,7 @@ function Get-SqlProvider {
 }
 
 function Invoke-BackupMonitor {
-    param([string]$ProviderMode = 'Auto', [int]$LookbackDays = 90, [long]$NowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    param([string]$ProviderMode = 'Auto', [int]$LookbackDays = 30, [long]$NowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
     $results = @()
     if ($ProviderMode -in @('Auto', 'VeeamAgent')) { $results += Get-VeeamProvider $LookbackDays $NowEpoch }
     if ($ProviderMode -in @('Auto', 'SqlBackupMaster')) { $results += Get-SqlProvider $NowEpoch }

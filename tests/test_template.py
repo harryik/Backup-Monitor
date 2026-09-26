@@ -39,6 +39,12 @@ def main():
     assert document["version"] == "7.0"
     template = document["templates"][0]
     assert len(template["items"]) == 6
+    master = template["items"][0]
+    assert master["delay"] == "1h"
+    assert master["triggers"][0]["uuid"] == "5c37c89278b95eecaf1ba9b68e02c2ac"
+    assert master["triggers"][0]["expression"] == (
+        "nodata(/Windows backup monitor by Zabbix agent 2/windows.backup.monitor.get,3h)=1"
+    )
     discovery = template["discovery_rules"][0]
     assert len(discovery["item_prototypes"]) == 9
     assert len(discovery["trigger_prototypes"]) == 6

@@ -168,9 +168,14 @@ Describe 'Provider isolation' {
     It 'retains healthy provider data after another provider failure' {
         Mock Get-VeeamProvider { New-ProviderResult 'veeam-agent' $true $false 'query failed' }
         Mock Get-SqlProvider { New-ProviderResult 'sql-backup-master' $true $true $null @((New-JobRecord 'sql-backup-master' 'ENOVA' $true $false 1 $null $null $null $null $null 1000)) }
-        $document = Invoke-BackupMonitor 'Auto' 90 1000
+        $document = Invoke-BackupMonitor 'Auto' 30 1000
         @($document.providers).Count | Should Be 2
         @($document.jobs).Count | Should Be 1
+    }
+    It 'defaults to a 30 day Veeam lookback' {
+        Mock Get-VeeamProvider { New-ProviderResult 'veeam-agent' $false $true $null }
+        $null = Invoke-BackupMonitor 'VeeamAgent'
+        Assert-MockCalled Get-VeeamProvider -Times 1 -ParameterFilter { $LookbackDays -eq 30 }
     }
 }
 
