@@ -121,15 +121,71 @@ function Convert-VeeamEventXml {
     $data = @($xml.SelectNodes('/*[local-name()="Event"]/*[local-name()="EventData"]/*[local-name()="Data"]'))
     $name = $null
     $result = $null
+    $jobId = $null
+    $sessionId = $null
+
     foreach ($entry in $data) {
         $field = [string]$entry.GetAttribute('Name')
         if ($field -in @('JobName', 'Job', 'BackupJobName')) { $name = [string]$entry.InnerText }
         if ($field -in @('Result', 'Status', 'JobStatus')) { $result = [string]$entry.InnerText }
+        if ($field -in @('JobId', 'JobID', 'BackupJobId')) { $jobId = [string]$entry.InnerText }
+        if ($field -in @('SessionId', 'SessionID')) { $sessionId = [string]$entry.InnerText }
     }
-    # Positional EventData is a provisional fallback until real sanitized XML is available.
-    if ([string]::IsNullOrWhiteSpace($name) -and $data.Count -gt 0 -and
-        [string]::IsNullOrWhiteSpace([string]$data[0].GetAttribute('Name'))) { $name = [string]$data[0].InnerText }
+
+    $isPositional = $data.Count -gt 0 -and [string]::IsNullOrWhiteSpace([string]$data[0].GetAttribute('Name'))
+    if ($isPositional) {
+        if ($data.Count -gt 0) {
+            $candidate = [string]$data[0].InnerText
+            $parsed = [Guid]::Empty
+            if ([Guid]::TryParse($candidate, [ref]$parsed)) { $sessionId = $parsed.ToString() }
+        }
+        if ($data.Count -gt 1) {
+            $candidate = [string]$data[1].InnerText
+            $parsed = [Guid]::Empty
+            if ([Guid]::TryParse($candidate, [ref]$parsed)) { $jobId = $parsed.ToString() }
+        }
+
+        $options = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        foreach ($entry in $data) {
+            $message = [string]$entry.InnerText
+            if ([string]::IsNullOrWhiteSpace($message)) { continue }
+
+            $match = [regex]::Match($message,
+                "^Veeam Agent '(?<job>.+?)' has been started(?: by user .+?)?\.", $options)
+            if (-not $match.Success) {
+                $match = [regex]::Match($message,
+                    "^Veeam Agent (?<job>.+?) has been started(?: by user .+?)?\.", $options)
+            }
+            if ($match.Success) {
+                $name = $match.Groups['job'].Value
+                break
+            }
+
+            $match = [regex]::Match($message,
+                "^Veeam Agent '(?<job>.+?)' finished with (?<status>Success|Warning|Error)(?: and will be retried)?\.", $options)
+            if (-not $match.Success) {
+                $match = [regex]::Match($message,
+                    "^Veeam Agent (?<job>.+?) finished with (?<status>Success|Warning|Error)(?: and will be retried)?\.", $options)
+            }
+            if ($match.Success) {
+                $name = $match.Groups['job'].Value
+                $result = $match.Groups['status'].Value
+                break
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($jobId)) {
+        $parsed = [Guid]::Empty
+        if ([Guid]::TryParse($jobId, [ref]$parsed)) { $jobId = $parsed.ToString() }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($sessionId)) {
+        $parsed = [Guid]::Empty
+        if ([Guid]::TryParse($sessionId, [ref]$parsed)) { $sessionId = $parsed.ToString() }
+    }
+
     if ([string]::IsNullOrWhiteSpace($name)) { throw 'Veeam event has no structured job name' }
+
     $code = 0
     if ($eventId -eq 190) {
         $code = Get-StatusCode $result
@@ -142,19 +198,38 @@ function Convert-VeeamEventXml {
             }
         }
     }
-    return [pscustomobject]@{ Id = $eventId; Job = $name; Epoch = [long]$timestamp.ToUnixTimeSeconds(); StatusCode = $code }
+
+    return [pscustomobject]@{
+        Id = $eventId
+        Job = $name
+        JobId = $jobId
+        SessionId = $sessionId
+        Epoch = [long]$timestamp.ToUnixTimeSeconds()
+        StatusCode = $code
+    }
 }
 
 function Convert-VeeamEventsToJobs {
     param([object[]]$Events, [long]$NowEpoch)
     $states = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
     foreach ($event in @($Events | Sort-Object Epoch, Id)) {
-        if (-not $states.ContainsKey($event.Job)) {
-            $states.Add($event.Job, [ordered]@{ Name = $event.Job; Start = $null; Finish = $null;
+        $jobId = $null
+        $jobIdProperty = $event.PSObject.Properties['JobId']
+        if ($null -ne $jobIdProperty) { $jobId = [string]$jobIdProperty.Value }
+        $identity = if (-not [string]::IsNullOrWhiteSpace($jobId)) { 'id:' + $jobId } else { 'name:' + [string]$event.Job }
+
+        if (-not $states.ContainsKey($identity)) {
+            $states.Add($identity, [ordered]@{ Name = $event.Job; Start = $null; Finish = $null;
                 Success = $null; Result = 0; CompletedDuration = $null })
         }
-        $state = $states[$event.Job]
-        if ($event.Id -eq 110) { $state.Start = [long]$event.Epoch }
+        $state = $states[$identity]
+        if (-not [string]::IsNullOrWhiteSpace([string]$event.Job)) { $state.Name = [string]$event.Job }
+
+        if ($event.Id -eq 110) {
+            if ($null -eq $state.Start -or ($null -ne $state.Finish -and [long]$event.Epoch -gt [long]$state.Finish)) {
+                $state.Start = [long]$event.Epoch
+            }
+        }
         elseif ($event.Id -eq 190) {
             $previousFinish = $state.Finish
             $state.Finish = [long]$event.Epoch
@@ -167,9 +242,10 @@ function Convert-VeeamEventsToJobs {
             }
         }
     }
+
     $jobs = @()
-    foreach ($name in @($states.Keys | Sort-Object -CaseSensitive)) {
-        $state = $states[$name]
+    foreach ($identity in @($states.Keys | Sort-Object -CaseSensitive)) {
+        $state = $states[$identity]
         $running = $null -ne $state.Start -and ($null -eq $state.Finish -or $state.Start -gt $state.Finish)
         $code = [int]$state.Result
         $duration = $state.CompletedDuration
@@ -178,7 +254,7 @@ function Convert-VeeamEventsToJobs {
             $duration = $null
             if ($state.Start -le $NowEpoch) { $duration = [long]($NowEpoch - $state.Start) }
         } elseif ($null -eq $state.Finish) { $code = 6 }
-        $jobs += New-JobRecord 'veeam-agent' $name $null $running $code $state.Start $state.Finish $state.Success $duration $null $NowEpoch
+        $jobs += New-JobRecord 'veeam-agent' $state.Name $null $running $code $state.Start $state.Finish $state.Success $duration $null $NowEpoch
     }
     return $jobs
 }
