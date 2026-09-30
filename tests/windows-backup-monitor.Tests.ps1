@@ -63,6 +63,27 @@ Describe 'Veeam structured Event Log adapter' {
         $job.last_success_epoch | Should Be 1790332200
         $job.duration_seconds | Should BeNullOrEmpty
     }
+    It 'parses real positional Veeam event layout without using session GUID as job name' {
+        $xml = '<Event><System><EventID>110</EventID><Level>4</Level><TimeCreated SystemTime="2026-09-30T01:00:02.713966700Z"/></System><EventData><Data>4a89138c-e7bb-4ce9-b6d2-ca03d0f09bb1</Data><Data>817725ae-a575-40ba-b969-0228170743f3</Data><Data>4000</Data><Data>6</Data><Data>0</Data><Data></Data><Data>7b711ee3-de58-484d-8fe9-d8f8b79251e2</Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data></Data><Data>1</Data><Data>Veeam Agent ''HUMAN-SRV-HO-01'' has been started.</Data></EventData></Event>'
+        $event = Convert-VeeamEventXml $xml
+        $event.Job | Should Be 'HUMAN-SRV-HO-01'
+        $event.JobId | Should Be '817725ae-a575-40ba-b969-0228170743f3'
+        $event.SessionId | Should Be '4a89138c-e7bb-4ce9-b6d2-ca03d0f09bb1'
+    }
+    It 'collapses Veeam retry attempts into one job using stable JobId' {
+        $start1 = [pscustomobject]@{Id=110;Job='HUMAN-SRV-HO-01';JobId='817725ae-a575-40ba-b969-0228170743f3';Epoch=1790730002;StatusCode=0}
+        $retry = [pscustomobject]@{Id=191;Job='HUMAN-SRV-HO-01';JobId='817725ae-a575-40ba-b969-0228170743f3';Epoch=1790730049;StatusCode=0}
+        $start2 = [pscustomobject]@{Id=110;Job='HUMAN-SRV-HO-01';JobId='817725ae-a575-40ba-b969-0228170743f3';Epoch=1790730662;StatusCode=0}
+        $finish = [pscustomobject]@{Id=190;Job='HUMAN-SRV-HO-01';JobId='817725ae-a575-40ba-b969-0228170743f3';Epoch=1790731040;StatusCode=1}
+        $jobs = @(Convert-VeeamEventsToJobs @($start1,$retry,$start2,$finish) 1790731200)
+        $jobs.Count | Should Be 1
+        $jobs[0].job | Should Be 'HUMAN-SRV-HO-01'
+        $jobs[0].status_code | Should Be 1
+        $jobs[0].running | Should Be $false
+        $jobs[0].last_start_epoch | Should Be 1790730002
+        $jobs[0].last_finish_epoch | Should Be 1790731040
+        $jobs[0].duration_seconds | Should Be 1038
+    }
     It 'rejects events without structured job identity' {
         { Convert-VeeamEventXml '<Event><System><EventID>190</EventID><Level>4</Level><TimeCreated SystemTime="2026-09-25T10:30:00Z"/></System></Event>' } | Should Throw
     }
@@ -100,30 +121,30 @@ Describe 'SQL Backup Master object adapter' {
 }
 
 Describe 'Provider isolation' {
-    It 'marks a missing SQL module absent and healthy' {
-        Mock Test-SqlModuleAvailable { $false }
+    It 'marks SQL Backup Master absent only when product and cmdlets are unavailable' {
+        Mock Test-SqlProductInstalled { $false }
         $result = Get-SqlProvider 1790334000
         $result.State.detected | Should Be $false
         $result.State.ok | Should Be $true
     }
-    It 'marks SQL import failure as a provider error' {
-        Mock Test-SqlModuleAvailable { $true }
-        Mock Import-Module { throw 'import failed' }
+    It 'marks an installed SQL Backup Master with unavailable cmdlets as detected but unhealthy' {
+        Mock Test-SqlProductInstalled { $true }
+        Mock Import-SqlBackupMasterModule { throw 'import failed' }
         $result = Get-SqlProvider 1790334000
         $result.State.detected | Should Be $true
         $result.State.ok | Should Be $false
     }
     It 'returns a healthy empty list when SQL has zero jobs' {
-        Mock Test-SqlModuleAvailable { $true }
-        Mock Import-Module { }
+        Mock Test-SqlProductInstalled { $true }
+        Mock Import-SqlBackupMasterModule { }
         Mock Get-SqlBackupJob { @() }
         $result = Get-SqlProvider 1790334000
         $result.State.ok | Should Be $true
         $result.Jobs.Count | Should Be 0
     }
     It 'keeps three SQL status queries and job identities separate' {
-        Mock Test-SqlModuleAvailable { $true }
-        Mock Import-Module { }
+        Mock Test-SqlProductInstalled { $true }
+        Mock Import-SqlBackupMasterModule { }
         Mock Get-SqlBackupJob {
             @([pscustomobject]@{JobName='A';IsEnabled=$true},
               [pscustomobject]@{JobName='B';IsEnabled=$true},
@@ -136,8 +157,8 @@ Describe 'Provider isolation' {
         @($result.Jobs | ForEach-Object { $_['job_uid'] } | Sort-Object -Unique).Count | Should Be 3
     }
     It 'passes a quoted Unicode name as a single JobName parameter' {
-        Mock Test-SqlModuleAvailable { $true }
-        Mock Import-Module { }
+        Mock Test-SqlProductInstalled { $true }
+        Mock Import-SqlBackupMasterModule { }
         Mock Get-SqlBackupJob { [pscustomobject]@{JobName='Łódź "A\B"';IsEnabled=$true} }
         Mock Get-SqlBackupJobStatus {
             if ($JobName -ne 'Łódź "A\B"') { throw 'JobName changed' }
@@ -148,16 +169,16 @@ Describe 'Provider isolation' {
         $result.Jobs[0].job | Should Be 'Łódź "A\B"'
     }
     It 'reports SQL enumeration failure without inventing zero healthy jobs' {
-        Mock Test-SqlModuleAvailable { $true }
-        Mock Import-Module { }
+        Mock Test-SqlProductInstalled { $true }
+        Mock Import-SqlBackupMasterModule { }
         Mock Get-SqlBackupJob { throw 'query failed' }
         $result = Get-SqlProvider 1790334000
         $result.State.detected | Should Be $true
         $result.State.ok | Should Be $false
     }
     It 'retains a failed SQL job identity when its status query fails' {
-        Mock Test-SqlModuleAvailable { $true }
-        Mock Import-Module { }
+        Mock Test-SqlProductInstalled { $true }
+        Mock Import-SqlBackupMasterModule { }
         Mock Get-SqlBackupJob { [pscustomobject]@{JobName='ENOVA';IsEnabled=$true} }
         Mock Get-SqlBackupJobStatus { throw 'query failed' }
         $result = Get-SqlProvider 1790334000

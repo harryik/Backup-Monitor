@@ -121,15 +121,71 @@ function Convert-VeeamEventXml {
     $data = @($xml.SelectNodes('/*[local-name()="Event"]/*[local-name()="EventData"]/*[local-name()="Data"]'))
     $name = $null
     $result = $null
+    $jobId = $null
+    $sessionId = $null
+
     foreach ($entry in $data) {
         $field = [string]$entry.GetAttribute('Name')
         if ($field -in @('JobName', 'Job', 'BackupJobName')) { $name = [string]$entry.InnerText }
         if ($field -in @('Result', 'Status', 'JobStatus')) { $result = [string]$entry.InnerText }
+        if ($field -in @('JobId', 'JobID', 'BackupJobId')) { $jobId = [string]$entry.InnerText }
+        if ($field -in @('SessionId', 'SessionID')) { $sessionId = [string]$entry.InnerText }
     }
-    # Positional EventData is a provisional fallback until real sanitized XML is available.
-    if ([string]::IsNullOrWhiteSpace($name) -and $data.Count -gt 0 -and
-        [string]::IsNullOrWhiteSpace([string]$data[0].GetAttribute('Name'))) { $name = [string]$data[0].InnerText }
+
+    $isPositional = $data.Count -gt 0 -and [string]::IsNullOrWhiteSpace([string]$data[0].GetAttribute('Name'))
+    if ($isPositional) {
+        if ($data.Count -gt 0) {
+            $candidate = [string]$data[0].InnerText
+            $parsed = [Guid]::Empty
+            if ([Guid]::TryParse($candidate, [ref]$parsed)) { $sessionId = $parsed.ToString() }
+        }
+        if ($data.Count -gt 1) {
+            $candidate = [string]$data[1].InnerText
+            $parsed = [Guid]::Empty
+            if ([Guid]::TryParse($candidate, [ref]$parsed)) { $jobId = $parsed.ToString() }
+        }
+
+        $options = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        foreach ($entry in $data) {
+            $message = [string]$entry.InnerText
+            if ([string]::IsNullOrWhiteSpace($message)) { continue }
+
+            $match = [regex]::Match($message,
+                "^Veeam Agent '(?<job>.+?)' has been started(?: by user .+?)?\.", $options)
+            if (-not $match.Success) {
+                $match = [regex]::Match($message,
+                    "^Veeam Agent (?<job>.+?) has been started(?: by user .+?)?\.", $options)
+            }
+            if ($match.Success) {
+                $name = $match.Groups['job'].Value
+                break
+            }
+
+            $match = [regex]::Match($message,
+                "^Veeam Agent '(?<job>.+?)' finished with (?<status>Success|Warning|Error)(?: and will be retried)?\.", $options)
+            if (-not $match.Success) {
+                $match = [regex]::Match($message,
+                    "^Veeam Agent (?<job>.+?) finished with (?<status>Success|Warning|Error)(?: and will be retried)?\.", $options)
+            }
+            if ($match.Success) {
+                $name = $match.Groups['job'].Value
+                $result = $match.Groups['status'].Value
+                break
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($jobId)) {
+        $parsed = [Guid]::Empty
+        if ([Guid]::TryParse($jobId, [ref]$parsed)) { $jobId = $parsed.ToString() }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($sessionId)) {
+        $parsed = [Guid]::Empty
+        if ([Guid]::TryParse($sessionId, [ref]$parsed)) { $sessionId = $parsed.ToString() }
+    }
+
     if ([string]::IsNullOrWhiteSpace($name)) { throw 'Veeam event has no structured job name' }
+
     $code = 0
     if ($eventId -eq 190) {
         $code = Get-StatusCode $result
@@ -142,19 +198,38 @@ function Convert-VeeamEventXml {
             }
         }
     }
-    return [pscustomobject]@{ Id = $eventId; Job = $name; Epoch = [long]$timestamp.ToUnixTimeSeconds(); StatusCode = $code }
+
+    return [pscustomobject]@{
+        Id = $eventId
+        Job = $name
+        JobId = $jobId
+        SessionId = $sessionId
+        Epoch = [long]$timestamp.ToUnixTimeSeconds()
+        StatusCode = $code
+    }
 }
 
 function Convert-VeeamEventsToJobs {
     param([object[]]$Events, [long]$NowEpoch)
     $states = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
     foreach ($event in @($Events | Sort-Object Epoch, Id)) {
-        if (-not $states.ContainsKey($event.Job)) {
-            $states.Add($event.Job, [ordered]@{ Name = $event.Job; Start = $null; Finish = $null;
+        $jobId = $null
+        $jobIdProperty = $event.PSObject.Properties['JobId']
+        if ($null -ne $jobIdProperty) { $jobId = [string]$jobIdProperty.Value }
+        $identity = if (-not [string]::IsNullOrWhiteSpace($jobId)) { 'id:' + $jobId } else { 'name:' + [string]$event.Job }
+
+        if (-not $states.ContainsKey($identity)) {
+            $states.Add($identity, [ordered]@{ Name = $event.Job; Start = $null; Finish = $null;
                 Success = $null; Result = 0; CompletedDuration = $null })
         }
-        $state = $states[$event.Job]
-        if ($event.Id -eq 110) { $state.Start = [long]$event.Epoch }
+        $state = $states[$identity]
+        if (-not [string]::IsNullOrWhiteSpace([string]$event.Job)) { $state.Name = [string]$event.Job }
+
+        if ($event.Id -eq 110) {
+            if ($null -eq $state.Start -or ($null -ne $state.Finish -and [long]$event.Epoch -gt [long]$state.Finish)) {
+                $state.Start = [long]$event.Epoch
+            }
+        }
         elseif ($event.Id -eq 190) {
             $previousFinish = $state.Finish
             $state.Finish = [long]$event.Epoch
@@ -167,9 +242,10 @@ function Convert-VeeamEventsToJobs {
             }
         }
     }
+
     $jobs = @()
-    foreach ($name in @($states.Keys | Sort-Object -CaseSensitive)) {
-        $state = $states[$name]
+    foreach ($identity in @($states.Keys | Sort-Object -CaseSensitive)) {
+        $state = $states[$identity]
         $running = $null -ne $state.Start -and ($null -eq $state.Finish -or $state.Start -gt $state.Finish)
         $code = [int]$state.Result
         $duration = $state.CompletedDuration
@@ -178,7 +254,7 @@ function Convert-VeeamEventsToJobs {
             $duration = $null
             if ($state.Start -le $NowEpoch) { $duration = [long]($NowEpoch - $state.Start) }
         } elseif ($null -eq $state.Finish) { $code = 6 }
-        $jobs += New-JobRecord 'veeam-agent' $name $null $running $code $state.Start $state.Finish $state.Success $duration $null $NowEpoch
+        $jobs += New-JobRecord 'veeam-agent' $state.Name $null $running $code $state.Start $state.Finish $state.Success $duration $null $NowEpoch
     }
     return $jobs
 }
@@ -243,18 +319,85 @@ function Convert-SqlJobToRecord {
     return New-JobRecord 'sql-backup-master' ([string]$name) $enabled $running $code $start $finish $success $duration $next $NowEpoch
 }
 
+function Get-SqlBackupMasterInstallLocations {
+    $locations = @()
+    $uninstallRoots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($root in $uninstallRoots) {
+        try {
+            foreach ($entry in @(Get-ItemProperty $root -ErrorAction SilentlyContinue)) {
+                if ([string]$entry.DisplayName -eq 'SQL Backup Master' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$entry.InstallLocation)) {
+                    $locations += ([string]$entry.InstallLocation).TrimEnd('\')
+                }
+            }
+        } catch { }
+    }
+    return @($locations | Sort-Object -Unique)
+}
+
+function Get-SqlBackupMasterModuleCandidates {
+    $paths = @()
+    foreach ($root in @($env:PSModulePath -split ';')) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $paths += (Join-Path $root 'SQLBackupMaster.Cmdlet.dll')
+        $paths += (Join-Path $root 'SQLBackupMaster\SQLBackupMaster.Cmdlet.dll')
+        $paths += (Join-Path $root 'SQLBackupMaster.Cmdlet\SQLBackupMaster.Cmdlet.dll')
+    }
+    foreach ($root in @(Get-SqlBackupMasterInstallLocations)) {
+        $paths += (Join-Path $root 'SQLBackupMaster.Cmdlet.dll')
+    }
+    $paths += 'C:\Program Files\Key Metric Software\SQL Backup Master\SQLBackupMaster.Cmdlet.dll'
+    $paths += 'C:\Program Files\SQL Backup Master\SQLBackupMaster.Cmdlet.dll'
+    return @($paths | Sort-Object -Unique)
+}
+
 function Test-SqlModuleAvailable {
-    return @(Get-Module -ListAvailable SQLBackupMaster -ErrorAction Stop).Count -gt 0
+    if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return $true }
+    if (@(Get-Module -ListAvailable SQLBackupMaster -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+    if (@(Get-Module -ListAvailable SQLBackupMaster.Cmdlet -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+    foreach ($path in @(Get-SqlBackupMasterModuleCandidates)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
+function Test-SqlProductInstalled {
+    if (Test-SqlModuleAvailable) { return $true }
+    return @(Get-SqlBackupMasterInstallLocations).Count -gt 0
+}
+
+function Import-SqlBackupMasterModule {
+    if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return }
+
+    foreach ($moduleName in @('SQLBackupMaster', 'SQLBackupMaster.Cmdlet')) {
+        try {
+            Import-Module $moduleName -ErrorAction Stop | Out-Null
+            if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return }
+        } catch { }
+    }
+
+    foreach ($path in @(Get-SqlBackupMasterModuleCandidates)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try {
+            Import-Module $path -ErrorAction Stop | Out-Null
+            if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return }
+        } catch { }
+    }
+
+    throw 'SQL Backup Master PowerShell cmdlets are unavailable'
 }
 
 function Get-SqlProvider {
     param([long]$NowEpoch)
     $id = 'sql-backup-master'
-    try { $available = Test-SqlModuleAvailable }
-    catch { return New-ProviderResult $id $true $false 'Failed to inspect SQL Backup Master module' }
-    if (-not $available) { return New-ProviderResult $id $false $true $null }
-    try { Import-Module SQLBackupMaster -ErrorAction Stop | Out-Null }
-    catch { return New-ProviderResult $id $true $false 'Failed to import SQL Backup Master module' }
+    try { $installed = Test-SqlProductInstalled }
+    catch { return New-ProviderResult $id $true $false 'Failed to inspect SQL Backup Master installation' }
+    if (-not $installed) { return New-ProviderResult $id $false $true $null }
+    try { Import-SqlBackupMasterModule }
+    catch { return New-ProviderResult $id $true $false 'Failed to import SQL Backup Master PowerShell module' }
     try { $rawJobs = @(Get-SqlBackupJob -ErrorAction Stop) }
     catch { return New-ProviderResult $id $true $false 'Failed to enumerate SQL Backup Master jobs' }
     $jobs = @()
