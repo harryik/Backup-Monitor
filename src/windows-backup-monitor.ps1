@@ -319,18 +319,85 @@ function Convert-SqlJobToRecord {
     return New-JobRecord 'sql-backup-master' ([string]$name) $enabled $running $code $start $finish $success $duration $next $NowEpoch
 }
 
+function Get-SqlBackupMasterInstallLocations {
+    $locations = @()
+    $uninstallRoots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($root in $uninstallRoots) {
+        try {
+            foreach ($entry in @(Get-ItemProperty $root -ErrorAction SilentlyContinue)) {
+                if ([string]$entry.DisplayName -eq 'SQL Backup Master' -and
+                    -not [string]::IsNullOrWhiteSpace([string]$entry.InstallLocation)) {
+                    $locations += ([string]$entry.InstallLocation).TrimEnd('\')
+                }
+            }
+        } catch { }
+    }
+    return @($locations | Sort-Object -Unique)
+}
+
+function Get-SqlBackupMasterModuleCandidates {
+    $paths = @()
+    foreach ($root in @($env:PSModulePath -split ';')) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $paths += (Join-Path $root 'SQLBackupMaster.Cmdlet.dll')
+        $paths += (Join-Path $root 'SQLBackupMaster\SQLBackupMaster.Cmdlet.dll')
+        $paths += (Join-Path $root 'SQLBackupMaster.Cmdlet\SQLBackupMaster.Cmdlet.dll')
+    }
+    foreach ($root in @(Get-SqlBackupMasterInstallLocations)) {
+        $paths += (Join-Path $root 'SQLBackupMaster.Cmdlet.dll')
+    }
+    $paths += 'C:\Program Files\Key Metric Software\SQL Backup Master\SQLBackupMaster.Cmdlet.dll'
+    $paths += 'C:\Program Files\SQL Backup Master\SQLBackupMaster.Cmdlet.dll'
+    return @($paths | Sort-Object -Unique)
+}
+
 function Test-SqlModuleAvailable {
-    return @(Get-Module -ListAvailable SQLBackupMaster -ErrorAction Stop).Count -gt 0
+    if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return $true }
+    if (@(Get-Module -ListAvailable SQLBackupMaster -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+    if (@(Get-Module -ListAvailable SQLBackupMaster.Cmdlet -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+    foreach ($path in @(Get-SqlBackupMasterModuleCandidates)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
+function Test-SqlProductInstalled {
+    if (Test-SqlModuleAvailable) { return $true }
+    return @(Get-SqlBackupMasterInstallLocations).Count -gt 0
+}
+
+function Import-SqlBackupMasterModule {
+    if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return }
+
+    foreach ($moduleName in @('SQLBackupMaster', 'SQLBackupMaster.Cmdlet')) {
+        try {
+            Import-Module $moduleName -ErrorAction Stop | Out-Null
+            if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return }
+        } catch { }
+    }
+
+    foreach ($path in @(Get-SqlBackupMasterModuleCandidates)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try {
+            Import-Module $path -ErrorAction Stop | Out-Null
+            if ($null -ne (Get-Command Get-SqlBackupJob -ErrorAction SilentlyContinue)) { return }
+        } catch { }
+    }
+
+    throw 'SQL Backup Master PowerShell cmdlets are unavailable'
 }
 
 function Get-SqlProvider {
     param([long]$NowEpoch)
     $id = 'sql-backup-master'
-    try { $available = Test-SqlModuleAvailable }
-    catch { return New-ProviderResult $id $true $false 'Failed to inspect SQL Backup Master module' }
-    if (-not $available) { return New-ProviderResult $id $false $true $null }
-    try { Import-Module SQLBackupMaster -ErrorAction Stop | Out-Null }
-    catch { return New-ProviderResult $id $true $false 'Failed to import SQL Backup Master module' }
+    try { $installed = Test-SqlProductInstalled }
+    catch { return New-ProviderResult $id $true $false 'Failed to inspect SQL Backup Master installation' }
+    if (-not $installed) { return New-ProviderResult $id $false $true $null }
+    try { Import-SqlBackupMasterModule }
+    catch { return New-ProviderResult $id $true $false 'Failed to import SQL Backup Master PowerShell module' }
     try { $rawJobs = @(Get-SqlBackupJob -ErrorAction Stop) }
     catch { return New-ProviderResult $id $true $false 'Failed to enumerate SQL Backup Master jobs' }
     $jobs = @()
